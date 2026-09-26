@@ -1,0 +1,25 @@
+{
+  "pullRequest": {
+    "owner": "octocat",
+    "repo": "Hello-World",
+    "number": 1
+  },
+  "fileReviews": [],
+  "summary": {
+    "totalFiles": 0,
+    "overallScore": 100,
+    "criticalIssues": 0,
+    "highPriorityTests": 0,
+    "refactoringOpportunities": 0
+  },
+  "recommendations": [],
+  "metadata": {
+    "analyzedAt": "2026-09-26T17:19:13.669Z",
+    "duration": 0,
+    "agentVersions": {
+      "codeQuality": "1.0.0",
+      "testCoverage": "1.0.0",
+      "refactoring": "1.0.0"
+    }
+  }
+}
