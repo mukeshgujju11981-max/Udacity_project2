@@ -4,6 +4,24 @@ import {
   RefactoringSuggestion
 } from '../types/analysis-results.js';
 
+export {
+  CodeQualityAnalyzer,
+  codeQualityAnalyzerConfig
+} from './code-quality-analyzer.js';
+
+export {
+  TestCoverageAnalyzer,
+  testCoverageAnalyzerConfig
+} from './test-coverage-analyzer.js';
+
+export {
+  RefactoringSuggester,
+  refactoringSuggesterConfig
+} from './refactoring-suggester.js';
+
+export type { AgentDefinition } from './code-quality-analyzer.js';
+
+// Retain legacy agent classes for backward compatibility
 export class CodeQualityAgent {
   async analyze(file: any): Promise<CodeQualityResult> {
     return {
