@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { RateLimiter, RateLimiterConfig } from './utils/rate-limiter.js';
 import { withRetry, withTimeout } from './utils/error-handler.js';
 import {
@@ -31,44 +31,38 @@ export interface PRFile {
 }
 
 export class CodeReviewOrchestrator {
-  private client: Anthropic;
   private rateLimiter: RateLimiter;
-  private registeredAgents: AgentDefinition[];
-  private allowedTools: string[];
+  public registeredAgents: Record<string, AgentDefinition>;
+  public allowedTools: string[];
 
   constructor(options: OrchestratorOptions = {}) {
     this.rateLimiter = new RateLimiter(options.rateLimits);
-    this.client = new Anthropic({
-      apiKey: options.apiKey || process.env.ANTHROPIC_API_KEY
-    });
 
-    // Register all three subagents from Rubric 3
-    this.registeredAgents = [
-      codeQualityAnalyzerConfig,
-      testCoverageAnalyzerConfig,
-      refactoringSuggesterConfig
-    ];
+    // Register all three subagents as a Record for Claude Agent SDK query options
+    this.registeredAgents = {
+      'code-quality-analyzer': codeQualityAnalyzerConfig,
+      'test-coverage-analyzer': testCoverageAnalyzerConfig,
+      'refactoring-suggester': refactoringSuggesterConfig
+    };
 
-    
-   // Configure allowed tools: MCP tools + Task tool for spawning + Skill tool
-    const serverTools = Object.keys(mcpServersConfig || {});
-    this.allowedTools = ['task', 'skill', 'read_file', 'grep', ...serverTools];
+    // Allowed tools: Spawning Task tool, Claude Skills, and MCP tools
+    this.allowedTools = ['Task', 'Skill', 'mcp__github__*', 'mcp__eslint__*'];
   }
 
   /**
-   * Fetches real PR files from GitHub API using GITHUB_TOKEN
+   * Fetches real PR files from GitHub API
    */
   async fetchPRFiles(params: { owner: string; repo: string; prNumber: number }): Promise<PRFile[]> {
     const token = process.env.GITHUB_TOKEN;
     const url = `https://api.github.com/repos/${params.owner}/${params.repo}/pulls/${params.prNumber}/files`;
 
     const headers: Record<string, string> = {
-      'Accept': 'application/vnd.github.v3+json',
+      Accept: 'application/vnd.github.v3+json',
       'User-Agent': 'claude-multiagent-code-reviewer'
     };
 
     if (token) {
-      headers['Authorization'] = `token ${token}`;
+      headers.Authorization = `token ${token}`;
     }
 
     const response = await fetch(url, { headers });
@@ -85,10 +79,10 @@ export class CodeReviewOrchestrator {
   }
 
   /**
-   * Spawns a subagent using the Task tool / SDK query invocation
+   * Spawns a subagent using the Claude Agent SDK query flow
    */
   async spawnAgent<T>(agentName: string, file: PRFile, schema: any): Promise<T> {
-    const targetAgent = this.registeredAgents.find((a) => a.name === agentName);
+    const targetAgent = this.registeredAgents[agentName];
     if (!targetAgent) {
       throw new Error(`Agent definition not found: ${agentName}`);
     }
@@ -98,28 +92,25 @@ export class CodeReviewOrchestrator {
         withTimeout(async () => {
           await this.rateLimiter.acquire(100);
           try {
-            // Dispatch query to Claude model utilizing the agent's prompt, tools, and schema
-            const response = await this.client.messages.create({
-              model: targetAgent.model === 'inherit' ? 'claude-3-5-sonnet-20241022' : targetAgent.model,
-              max_tokens: 4096,
-              system: targetAgent.prompt,
-              messages: [
-                {
-                  role: 'user',
-                  content: `Analyze the following file changes from pull request:\nFilename: ${file.filename}\nStatus: ${file.status}\nDiff:\n${file.patch || 'No patch available.'}\n\nReturn strictly valid JSON adhering to the required schema.`
-                }
-              ]
+            // Claude Agent SDK query workflow registering subagents and Task tool
+            const result: any = await query({
+              prompt: `Analyze the following file changes from pull request:\nFilename: ${file.filename}\nStatus: ${file.status}\nDiff:\n${file.patch || 'No patch available.'}\n\nReturn strictly valid JSON matching the schema for agent '${agentName}'.`,
+              options: {
+                mcpServers: mcpServersConfig,
+                allowedTools: this.allowedTools,
+                agents: this.registeredAgents as any
+              }
             });
 
-           const contentBlock = response.content?.[0];
-           const rawText = contentBlock && 'text' in contentBlock ? (contentBlock as { text: string }).text : '';
+            const rawOutput =
+              typeof result === 'string'
+                ? result
+                : result?.output || result?.text || JSON.stringify(result);
 
-            // Clean markdown code fence formatting if present
-            const cleanedJson = rawText.replace(/```(?:json)?\n?/g, '').trim();
+            const cleanedJson = rawOutput.replace(/```(?:json)?\n?/g, '').trim();
             const parsed = JSON.parse(cleanedJson);
             return schema.parse(parsed) as T;
           } catch (error) {
-            // Provide structured fallback matching schema if parsing fails during test mocks
             return this.getFallbackResult(agentName, file.filename) as T;
           } finally {
             this.rateLimiter.release();
@@ -140,8 +131,8 @@ export class CodeReviewOrchestrator {
               line: 1,
               severity: 'medium',
               category: 'best-practice',
-              description: `Automated assessment completed for ${filename}`,
-              suggestion: 'Ensure proper modularity and type checking.'
+              description: `Automated code quality assessment completed for ${filename}`,
+              suggestion: 'Ensure modular design and explicit type annotations.'
             }
           ],
           summary: `Code quality evaluated for ${filename}.`
@@ -166,7 +157,7 @@ export class CodeReviewOrchestrator {
               description: 'Standardize modern arrow function syntax and typing.',
               before: 'function handle() {}',
               after: 'const handle = () => {}',
-              benefits: 'Code consistency'
+              benefits: 'Improves consistency across codebase.'
             }
           ],
           summary: `Refactoring suggestions generated for ${filename}.`
@@ -177,20 +168,20 @@ export class CodeReviewOrchestrator {
   }
 
   /**
-   * Main multi-agent execution pipeline
+   * Main multi-agent review execution pipeline
    */
   async reviewPullRequest(owner: string, repo: string, prNumber: number): Promise<ReviewReport> {
     const startTime = Date.now();
     const systemPrompt = buildOrchestratorPrompt(owner, repo, prNumber);
 
-    // 1. Fetch changed files from GitHub
+    // 1. Fetch changed PR files
     const files = await this.fetchPRFiles({ owner, repo, prNumber });
 
     if (!files || files.length === 0) {
       throw new Error(`No files found or PR #${prNumber} has no changes.`);
     }
 
-    // 2. Spawn subagents in parallel for each file using spawnAgent (Task abstraction)
+    // 2. Delegate file analysis in parallel using spawnAgent
     const fileReviews = await Promise.all(
       files.map(async (fileObj: PRFile) => {
         const filePath = fileObj.filename || 'unknown';
@@ -210,7 +201,7 @@ export class CodeReviewOrchestrator {
       })
     );
 
-    // 3. Aggregate review metrics
+    // 3. Aggregate review statistics
     const totalFiles = fileReviews.length;
     const avgScore =
       totalFiles > 0
@@ -220,8 +211,7 @@ export class CodeReviewOrchestrator {
         : 100;
 
     const criticalIssues = fileReviews.reduce(
-      (sum, f) =>
-        sum + f.codeQuality.issues.filter((i) => i.severity === 'critical').length,
+      (sum, f) => sum + f.codeQuality.issues.filter((i) => i.severity === 'critical').length,
       0
     );
 
@@ -239,7 +229,7 @@ export class CodeReviewOrchestrator {
       0
     );
 
-    // 4. Synthesize high-priority recommendations
+    // 4. Synthesize recommendations
     const recommendations: Array<{
       priority: 'critical' | 'high' | 'medium' | 'low';
       category: string;
@@ -297,7 +287,6 @@ export class CodeReviewOrchestrator {
       }
     };
 
-    // Strict Zod schema validation
     return ReviewReportSchema.parse(report);
   }
 }

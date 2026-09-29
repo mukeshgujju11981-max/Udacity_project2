@@ -2,18 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CodeReviewOrchestrator } from '../src/orchestrator.js';
 import { ReviewReportSchema } from '../src/types/report-types.js';
 
-// Mock Anthropic SDK
-vi.mock('@anthropic-ai/sdk', () => {
-  return {
-    default: class MockAnthropic {
-      messages = {
-        create: vi.fn().mockResolvedValue({
-          content: [{ type: 'text', text: '{}' }]
-        })
-      };
-    }
-  };
-});
+// Mock Claude Agent SDK query
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: vi.fn().mockResolvedValue('{}')
+}));
 
 describe('CodeReviewOrchestrator', () => {
   const sampleFiles = [
@@ -77,9 +69,12 @@ describe('CodeReviewOrchestrator', () => {
   });
 
   describe('Configuration', () => {
-    it('should initialize with default options', () => {
+    it('should initialize with registered subagents and Task tool', () => {
       const orchestrator = new CodeReviewOrchestrator();
       expect(orchestrator).toBeDefined();
+      expect(Object.keys(orchestrator.registeredAgents)).toHaveLength(3);
+      expect(orchestrator.allowedTools).toContain('Task');
+      expect(orchestrator.allowedTools).toContain('Skill');
     });
 
     it('should accept custom rate limit configuration', () => {
